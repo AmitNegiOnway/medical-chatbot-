@@ -32,7 +32,7 @@ def analyze_patient_tone(symptom_text: str) -> str:
     worried_words = [
         "severe", "serious", "emergency", "very bad",
         "extreme", "unbearable", "can't breathe",
-        "very painful", "critical"
+        "very painful", "critical,fever,cold"
     ]
     mild_words = [
         "little", "mild", "slight", "small pain",
