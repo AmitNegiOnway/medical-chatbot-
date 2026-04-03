@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import json
-import pandas as pd
 from datetime import datetime
 
 # ========== TOOL FUNCTIONS ==========
@@ -87,13 +86,13 @@ tools = [{
 # ========== API URL ==========
 API_URL = "https://lashanda-inturned-monstrously.ngrok-free.dev/api/chat"
 
-# ========== MAIN FUNCTION ==========
+# ========== MAIN FUNCTION WITH STREAMING FINAL RESPONSE ==========
 def process_message(message):
     """
-    Process user message and return response
+    Process user message and return response with streaming for final output
     """
     try:
-        # Step 1: Initial message with tools
+        # Step 1: Initial message with tools (NO STREAMING)
         initial_message = [
             {"role": "user", "content": f"classify_symptom and analyze_patient_tone from patient message: {message}"}
         ]
@@ -102,7 +101,7 @@ def process_message(message):
             "model": "mistral:latest",
             "messages": initial_message,
             "tools": tools,
-            "stream": False
+            "stream": False  # First call: NO streaming
         }
 
         response = requests.post(API_URL, json=payload, timeout=60)
@@ -132,28 +131,37 @@ def process_message(message):
                     "content": result
                 })
 
-        # Step 4: Send tool results back
+        # Step 4: Send tool results back WITH STREAMING
         if tool_outputs:
             message_for_next_step.extend(tool_outputs)
             
             final_payload = {
                 "model": "mistral:latest",
                 "messages": message_for_next_step,
-                "stream": False
+                "stream": True  # Second call: YES streaming!
             }
             
-            final_response = requests.post(API_URL, json=final_payload, timeout=60)
-            final_result = final_response.json()
+            final_response = requests.post(API_URL, json=final_payload, stream=True, timeout=120)
             
-            if "message" in final_result:
-                return final_result["message"].get("content", "")
+            # Yield tokens as they arrive
+            for line in final_response.iter_lines():
+                if line:
+                    try:
+                        data = json.loads(line)
+                        if "message" in data and "content" in data["message"]:
+                            content = data["message"]["content"]
+                            if content:
+                                yield content
+                    except json.JSONDecodeError:
+                        continue
         
-        return "Sorry, I couldn't process your request."
+        else:
+            yield "Sorry, I couldn't process your request."
 
     except Exception as e:
-        return f"Error: {str(e)}"
+        yield f"Error: {str(e)}"
 
-# ========== STREAMLIT UI (No CSS - Pure Streamlit Components) ==========
+# ========== STREAMLIT UI ==========
 def main():
     # Page configuration
     st.set_page_config(
@@ -162,7 +170,7 @@ def main():
         layout="wide"
     )
 
-    # Header using columns and containers
+    # Header
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         st.title("🏥 Medical Symptom Chatbot")
@@ -180,6 +188,7 @@ def main():
             - 🔍 Symptom classification
             - 🎭 Emotional tone analysis
             - 💊 Personalized medical advice
+            - ⚡ Streaming responses
             - ⚠️ Emergency detection
             """
         )
@@ -235,35 +244,46 @@ def main():
         welcome_msg = "Hello! I'm your medical assistant. Please describe your symptoms, and I'll help analyze them and provide advice. Remember, I'm not a replacement for a real doctor!"
         st.session_state.messages.append({"role": "assistant", "content": welcome_msg})
 
-    # Display chat history using containers
-    chat_container = st.container()
-    
-    with chat_container:
-        for msg in st.session_state.messages:
-            if msg["role"] == "user":
-                with st.chat_message("user"):
-                    st.write(msg["content"])
-            else:
-                with st.chat_message("assistant"):
-                    st.write(msg["content"])
+    # Display chat history
+    for msg in st.session_state.messages:
+        if msg["role"] == "user":
+            with st.chat_message("user"):
+                st.write(msg["content"])
+        else:
+            with st.chat_message("assistant"):
+                st.write(msg["content"])
     
     # Chat input
     if "user_input" not in st.session_state:
         st.session_state.user_input = ""
     
-    # Use chat_input for better UX
     user_input = st.chat_input("Describe your symptoms here...")
     
     if user_input:
         # Add user message
         st.session_state.messages.append({"role": "user", "content": user_input})
         
-        # Show thinking indicator
-        with st.spinner("🤔 Analyzing your symptoms..."):
-            bot_response = process_message(user_input)
+        # Display user message immediately
+        with st.chat_message("user"):
+            st.write(user_input)
         
-        # Add bot response
-        st.session_state.messages.append({"role": "assistant", "content": bot_response})
+        # Display assistant message with streaming
+        with st.chat_message("assistant"):
+            response_container = st.empty()
+            full_response = ""
+            
+            # Show initial spinner while first API call happens
+            with st.spinner("🔍 Analyzing symptoms and preparing response..."):
+                # Stream the final response
+                for token in process_message(user_input):
+                    full_response += token
+                    response_container.markdown(full_response + "▌")
+            
+            # Final response without cursor
+            response_container.markdown(full_response)
+        
+        # Add to chat history
+        st.session_state.messages.append({"role": "assistant", "content": full_response})
         
         st.rerun()
     
